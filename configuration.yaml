@@ -1,0 +1,4 @@
+csv-files-directory: ./.csv_files/
+#app port
+hash-buckets:
+  amount: 8
