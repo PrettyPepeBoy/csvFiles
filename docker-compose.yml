@@ -1,0 +1,36 @@
+services:
+  main:
+    container_name: filer
+    build:
+      dockerfile: Dockerfile
+    command: ./main
+    ports:
+      - 8999:8999
+
+  prometheus:
+    container_name: prometheus_filer
+    restart: always
+    image: prom/prometheus:latest
+    ports:
+      - 9090:9090
+    volumes:
+      - ./prometheus/:/etc/prometheus/
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana_filer
+    ports:
+      - 3000:3000
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=devops123
+    volumes:
+      - ./grafana/:/etc/grafana/provisioning/datasources/
+      - grafana-storage:/var/lib/grafana
+
+volumes:
+  prometheus_data:
+  grafana-storage:

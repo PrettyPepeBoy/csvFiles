@@ -1,4 +1,8 @@
-csv-files-directory: ./.csv_files/
-#app port
-hash-buckets:
-  amount: 8
+storage:
+  hash-buckets:
+    amount: 20
+  files:
+    directory: ./.csv_files/
+
+http-server:
+  port: 8999

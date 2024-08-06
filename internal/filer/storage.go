@@ -22,7 +22,7 @@ type Data struct {
 }
 
 func NewStorage() *Storage {
-	hashBucketsAmount := viper.GetInt("hash-buckets.amount")
+	hashBucketsAmount := viper.GetInt("storage.hash-buckets.amount")
 
 	return &Storage{
 		hashedId:          make([][]int, hashBucketsAmount),
@@ -109,7 +109,7 @@ func (s *Storage) loadData(id int, filename string) {
 
 func (s *Storage) getData(filename string) []int {
 	id := make([]int, 0, len(s.fileStorage[filename].id))
-	for key, _ := range s.fileStorage[filename].id {
+	for key := range s.fileStorage[filename].id {
 		id = append(id, key)
 	}
 

@@ -1,76 +1,77 @@
 package filer
 
 import (
-	"bytes"
 	"encoding/csv"
 	"errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+	"github.com/valyala/fasthttp"
 	"log"
 	"os"
 	"strconv"
+	"time"
 )
 
-func (s *Storage) LoadAllData() error {
-	files, err := os.ReadDir(viper.GetString("csv-files-directory"))
-	if err != nil {
-		logrus.Errorf("failed to read directory: %s, error: %v", viper.GetString("csv-files-directory"), err)
-		return err
-	}
-
-	for _, file := range files {
-		if err = s.loadFileData(file); err != nil {
-			return err
-		}
-	}
-
-	return nil
+type file struct {
+	directory string
 }
 
 var (
+	csvFiles *file
+
 	ErrNewFileIsNotSet = errors.New("new file is not set")
 	ErrMustBeUnique    = errors.New("id must be unique")
 )
 
-func (s *Storage) WriteData(fileName string, id []int, newFile, notUnique bool) error {
-	_, err := os.Stat(viper.GetString("csv-files-directory") + fileName)
+func initFile() *file {
+	return &file{
+		directory: viper.GetString("storage.files.directory"),
+	}
+}
+
+func (s *Storage) WriteData(filename string, id []int, newFile, notUnique bool) error {
+	t := time.Now()
+	defer timeMetric("api/v1/ids", fasthttp.MethodPut, t)
+
+	_, err := os.Stat(csvFiles.directory + filename)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && newFile {
+			s.initFile(filename)
 		} else if errors.Is(err, os.ErrNotExist) && !newFile {
+			metricFilerErrors.Inc()
 			return ErrNewFileIsNotSet
 		} else {
+			metricFilerErrors.Inc()
 			logrus.Errorf("failed to put data in file, error: %v", err)
 			return err
 		}
 	}
-
-	if newFile {
-		s.initFile(fileName)
-	}
-
-	return s.writeData(fileName, id, notUnique)
+	return s.writeData(filename, id, notUnique)
 }
 
-func (s *Storage) writeData(filename string, id []int, notUnique bool) error {
-	slc := make([]string, len(id))
+func (s *Storage) writeData(filename string, ids []int, notUnique bool) error {
+	buf := make([]string, len(ids))
 
-	for i, elem := range id {
-		if !s.add(elem, filename, notUnique) {
+	for i, id := range ids {
+		if !s.add(id, filename, notUnique) {
 			return ErrMustBeUnique
 		}
 
-		slc[i] = strconv.Itoa(elem)
+		buf[i] = strconv.Itoa(id)
 	}
 
-	f, err := os.OpenFile(viper.GetString("csv-files-directory")+filename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	f, err := os.OpenFile(csvFiles.directory+filename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
+
+		metricFilerErrors.Inc()
 		logrus.Errorf("failed to open file: %s, error: %v", filename, err)
 		return err
 	}
 
 	writer := csv.NewWriter(f)
-	err = writer.Write(slc)
+	err = writer.Write(buf)
 	if err != nil {
+		metricFilerErrors.Inc()
 		logrus.Errorf("failed to write data to file, error: %v", err)
 		return err
 	}
@@ -80,23 +81,30 @@ func (s *Storage) writeData(filename string, id []int, notUnique bool) error {
 	return nil
 }
 
-func (s *Storage) GetData(filename string) ([]byte, error) {
-	data := s.getData(filename)
-	var buf bytes.Buffer
-	for _, elem := range data {
-		byteId := []byte(strconv.Itoa(elem))
-		buf.Grow(len(byteId))
-		_, err := buf.Write(byteId)
-		if err != nil {
-			return nil, err
+func (s *Storage) GetData(filename string) ([]int, error) {
+	return s.getData(filename), nil
+}
+
+func (s *Storage) LoadAllData() error {
+	csvFiles = initFile()
+
+	files, err := os.ReadDir(csvFiles.directory)
+	if err != nil {
+		logrus.Errorf("failed to read directory: %s, error: %v", viper.GetString("csv-files-directory"), err)
+		return err
+	}
+
+	for _, f := range files {
+		if err = s.loadFileData(f); err != nil {
+			return err
 		}
 	}
 
-	return buf.Bytes(), nil
+	return nil
 }
 
 func (s *Storage) loadFileData(file os.DirEntry) error {
-	f, err := os.Open(viper.GetString("csv-files-directory") + file.Name())
+	f, err := os.Open(csvFiles.directory + file.Name())
 	if err != nil {
 		logrus.Errorf("failed to open file: %s, error: %v", file.Name(), err)
 		return err

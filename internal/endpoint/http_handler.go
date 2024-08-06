@@ -1,22 +1,37 @@
 package endpoint
 
 import (
-	filesworker "csvfiles/internal/filer"
+	"bufio"
+	"csvfiles/internal/filer"
 	"encoding/json"
 	"errors"
-	log "github.com/sirupsen/logrus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttpadaptor"
+	"strconv"
+	"sync"
 )
 
 var routingMap = map[string]route{
-	"/api/v1/id": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) {
+	"/api/v1/ids": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) {
 		if string(ctx.Method()) == fasthttp.MethodPut {
 			h.WriteInFile(ctx)
-		} else if string(ctx.Method()) == fasthttp.MethodGet {
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+		}
+	}},
+
+	"/api/v1/file": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) {
+		if string(ctx.Method()) == fasthttp.MethodGet {
 			h.GetDataFromFile(ctx)
 		} else {
 			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
 		}
+	}},
+
+	"/metrics": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) {
+		h.metricsHandler(ctx)
 	}},
 }
 
@@ -26,7 +41,9 @@ type route struct {
 }
 
 type HttpHandler struct {
-	fileStorage *filesworker.Storage
+	metricsHandler fasthttp.RequestHandler
+	fileStorage    *filer.Storage
+	filerMutex     sync.Mutex
 }
 
 func init() {
@@ -36,9 +53,10 @@ func init() {
 	}
 }
 
-func NewHttpHandler(fileStorage *filesworker.Storage) *HttpHandler {
+func NewHttpHandler(fileStorage *filer.Storage) *HttpHandler {
 	return &HttpHandler{
-		fileStorage: fileStorage,
+		fileStorage:    fileStorage,
+		metricsHandler: fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()),
 	}
 }
 
@@ -46,8 +64,7 @@ func (h *HttpHandler) Handle(ctx *fasthttp.RequestCtx) {
 	defer func() {
 		err := recover()
 		if err != nil {
-			log.Fatalf("fatal error occured during handling, error: %v", err)
-			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+			logrus.Fatalf("fatal error occured during handling, error: %v", err)
 		}
 	}()
 
@@ -60,12 +77,15 @@ func (h *HttpHandler) Handle(ctx *fasthttp.RequestCtx) {
 
 type File struct {
 	Name      string `json:"name,required"`
-	Id        []int  `json:"id,required"`
+	Ids       []int  `json:"ids,required"`
 	NewFile   bool   `json:"new-file"`
 	NotUnique bool   `json:"not-unique"`
 }
 
 func (h *HttpHandler) WriteInFile(ctx *fasthttp.RequestCtx) {
+	h.filerMutex.Lock()
+	defer h.filerMutex.Unlock()
+
 	var file File
 	err := json.Unmarshal(ctx.PostBody(), &file)
 	if err != nil {
@@ -73,14 +93,14 @@ func (h *HttpHandler) WriteInFile(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	err = h.fileStorage.WriteData(file.Name, file.Id, file.NewFile, file.NotUnique)
+	err = h.fileStorage.WriteData(file.Name, file.Ids, file.NewFile, file.NotUnique)
 	if err != nil {
-		if errors.Is(filesworker.ErrNewFileIsNotSet, err) {
+		if errors.Is(filer.ErrNewFileIsNotSet, err) {
 			ctx.SetStatusCode(fasthttp.StatusBadRequest)
 			return
 		}
 
-		if errors.Is(filesworker.ErrMustBeUnique, err) {
+		if errors.Is(filer.ErrMustBeUnique, err) {
 			ctx.SetStatusCode(fasthttp.StatusBadRequest)
 			return
 		}
@@ -88,8 +108,6 @@ func (h *HttpHandler) WriteInFile(ctx *fasthttp.RequestCtx) {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		return
 	}
-
-	ctx.SetStatusCode(fasthttp.StatusOK)
 }
 
 func (h *HttpHandler) GetDataFromFile(ctx *fasthttp.RequestCtx) {
@@ -99,6 +117,23 @@ func (h *HttpHandler) GetDataFromFile(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	ctx.SetBody(data)
-	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBodyStreamWriter(func(w *bufio.Writer) {
+		for i, id := range data {
+			if _, err = w.WriteString("Num: "); err != nil {
+				return
+			}
+			if _, err = w.WriteString(strconv.Itoa(i)); err != nil {
+				return
+			}
+			if _, err = w.WriteString(" id: "); err != nil {
+				return
+			}
+			if _, err = w.WriteString(strconv.Itoa(id)); err != nil {
+				return
+			}
+			if err = w.WriteByte('\n'); err != nil {
+				return
+			}
+		}
+	})
 }
