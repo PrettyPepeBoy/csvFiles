@@ -17,13 +17,9 @@ var routingMap = map[string]route{
 	"/api/v1/ids": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) {
 		if string(ctx.Method()) == fasthttp.MethodPut {
 			h.WriteInFile(ctx)
-		} else {
-			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
-		}
-	}},
-
-	"/api/v1/file": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) {
-		if string(ctx.Method()) == fasthttp.MethodGet {
+		} else if string(ctx.Method()) == fasthttp.MethodDelete {
+			h.DeleteDataFromFile(ctx)
+		} else if string(ctx.Method()) == fasthttp.MethodGet {
 			h.GetDataFromFile(ctx)
 		} else {
 			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
@@ -42,7 +38,7 @@ type route struct {
 
 type HttpHandler struct {
 	metricsHandler fasthttp.RequestHandler
-	fileStorage    *filer.Storage
+	filerService   *filer.Filer
 	filerMutex     sync.Mutex
 }
 
@@ -53,9 +49,9 @@ func init() {
 	}
 }
 
-func NewHttpHandler(fileStorage *filer.Storage) *HttpHandler {
+func NewHttpHandler(filerService *filer.Filer) *HttpHandler {
 	return &HttpHandler{
-		fileStorage:    fileStorage,
+		filerService:   filerService,
 		metricsHandler: fasthttpadaptor.NewFastHTTPHandler(promhttp.Handler()),
 	}
 }
@@ -93,7 +89,7 @@ func (h *HttpHandler) WriteInFile(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	err = h.fileStorage.WriteData(file.Name, file.Ids, file.NewFile, file.NotUnique)
+	err = h.filerService.WriteData(file.Name, file.Ids, file.NewFile, file.NotUnique)
 	if err != nil {
 		if errors.Is(filer.ErrNewFileIsNotSet, err) {
 			ctx.SetStatusCode(fasthttp.StatusBadRequest)
@@ -111,9 +107,9 @@ func (h *HttpHandler) WriteInFile(ctx *fasthttp.RequestCtx) {
 }
 
 func (h *HttpHandler) GetDataFromFile(ctx *fasthttp.RequestCtx) {
-	data, err := h.fileStorage.GetData(string(ctx.QueryArgs().Peek("file")))
+	data, err := h.filerService.GetData(string(ctx.QueryArgs().Peek("file")))
 	if err != nil {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 		return
 	}
 
@@ -136,4 +132,24 @@ func (h *HttpHandler) GetDataFromFile(ctx *fasthttp.RequestCtx) {
 			}
 		}
 	})
+}
+
+func (h *HttpHandler) DeleteDataFromFile(ctx *fasthttp.RequestCtx) {
+	var f File
+	err := json.Unmarshal(ctx.PostBody(), &f)
+	if err != nil {
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		return
+	}
+
+	err = h.filerService.DeleteData(f.Name, f.Ids)
+	if err != nil {
+		if errors.Is(filer.ErrFileIsNotExist, err) {
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+			return
+		}
+
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		return
+	}
 }

@@ -9,44 +9,44 @@ import (
 	"unsafe"
 )
 
-type Storage struct {
-	fileStorage       map[string]*Data
-	hashedId          [][]int
+type storage struct {
+	fileStorage       map[string]*data
+	hashedIds         [][]int
 	hash              *hasher
 	mx                sync.Mutex
 	hashBucketsAmount int
 }
 
-type Data struct {
+type data struct {
 	id map[int]struct{}
 }
 
-func NewStorage() *Storage {
+func newStorage() *storage {
 	hashBucketsAmount := viper.GetInt("storage.hash-buckets.amount")
 
-	return &Storage{
-		hashedId:          make([][]int, hashBucketsAmount),
-		fileStorage:       make(map[string]*Data),
+	return &storage{
+		hashedIds:         make([][]int, hashBucketsAmount),
+		fileStorage:       make(map[string]*data),
 		hash:              newHasher(),
 		hashBucketsAmount: hashBucketsAmount,
 	}
 }
 
-func (d *Data) put(id int) {
+func (d *data) put(id int) {
 	d.id[id] = struct{}{}
 }
 
-func (s *Storage) add(id int, filename string, notUnique bool) bool {
+func (s *storage) add(id int, filename string, notUnique bool) bool {
 	s.mx.Lock()
 	defer s.mx.Unlock()
-	bucketNumber := int(s.hash.getHash(id)) % s.hashBucketsAmount
-	i, find := slices.BinarySearch(s.hashedId[bucketNumber], id)
+	bucketNumber := s.hash.getHash(id) % s.hashBucketsAmount
+	i, find := slices.BinarySearch(s.hashedIds[bucketNumber], id)
 	if find && !notUnique {
 		return false
 	}
 
 	if !find {
-		s.hashedId[bucketNumber] = insertInBucket(s.hashedId[bucketNumber], id, i)
+		s.hashedIds[bucketNumber] = insertInBucket(s.hashedIds[bucketNumber], id, i)
 	}
 
 	s.fileStorage[filename].put(id)
@@ -66,17 +66,17 @@ func newHasher() *hasher {
 	}
 }
 
-func (h *hasher) getHash(v int) uint32 {
+func (h *hasher) getHash(v int) int {
 	ptr := (*byte)(unsafe.Pointer(&v))
-	data := unsafe.Slice(ptr, h.size)
+	dt := unsafe.Slice(ptr, h.size)
 	defer h.hash.Reset()
 
-	_, err := h.hash.Write(data)
+	_, err := h.hash.Write(dt)
 	if err != nil {
 		panic(err)
 	}
 
-	return h.hash.Sum32()
+	return int(h.hash.Sum32())
 }
 
 func insertInBucket(bucket []int, id int, index int) []int {
@@ -86,7 +86,7 @@ func insertInBucket(bucket []int, id int, index int) []int {
 	}
 
 	if index == 0 {
-		bucket = append(bucket[:index+1], bucket...)
+		bucket = append(bucket[:1], bucket...)
 		bucket[index] = 0
 		return bucket
 	}
@@ -96,22 +96,46 @@ func insertInBucket(bucket []int, id int, index int) []int {
 	return bucket
 }
 
-func (s *Storage) loadData(id int, filename string) {
-	bucketNumber := int(s.hash.getHash(id)) % s.hashBucketsAmount
+func deleteFromBucket(bucket []int, index int) []int {
+	bucket = append(bucket[:index], bucket[index+1:]...)
+	return bucket[:len(bucket)-1]
+}
 
-	i, find := slices.BinarySearch(s.hashedId[bucketNumber], id)
+func (s *storage) loadData(id int, filename string) {
+	bucketNumber := s.hash.getHash(id) % s.hashBucketsAmount
+
+	i, find := slices.BinarySearch(s.hashedIds[bucketNumber], id)
 	if !find {
-		s.hashedId[bucketNumber] = insertInBucket(s.hashedId[bucketNumber], id, i)
+		s.hashedIds[bucketNumber] = insertInBucket(s.hashedIds[bucketNumber], id, i)
 	}
 
 	s.fileStorage[filename].put(id)
 }
 
-func (s *Storage) getData(filename string) []int {
+func (s *storage) getData(filename string) ([]int, bool) {
+	_, ok := s.fileStorage[filename]
+	if !ok {
+		return nil, false
+	}
+
 	id := make([]int, 0, len(s.fileStorage[filename].id))
 	for key := range s.fileStorage[filename].id {
 		id = append(id, key)
 	}
 
-	return id
+	return id, true
+}
+
+func (s *storage) deleteData(filename string, ids []int) {
+	for _, id := range ids {
+		bucketNumber := s.hash.getHash(id) % s.hashBucketsAmount
+
+		i, ok := slices.BinarySearch(s.hashedIds[bucketNumber], id)
+		if !ok {
+			continue
+		}
+
+		s.hashedIds[bucketNumber] = deleteFromBucket(s.hashedIds[bucketNumber], i)
+		delete(s.fileStorage[filename].id, id)
+	}
 }

@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	storage     *filer.Storage
-	httpHandler *endpoint.HttpHandler
+	filerService *filer.Filer
+	httpHandler  *endpoint.HttpHandler
 )
 
 func init() {
@@ -22,8 +22,8 @@ func init() {
 }
 
 func main() {
-	mustInitConfig()
-	mustInitStorage()
+	setupConfig()
+	setupFiler()
 	setupHttpHandler()
 
 	sigChan := make(chan os.Signal, 1)
@@ -32,7 +32,7 @@ func main() {
 }
 
 func setupHttpHandler() {
-	httpHandler = endpoint.NewHttpHandler(storage)
+	httpHandler = endpoint.NewHttpHandler(filerService)
 	go func() {
 		logrus.Info("Server started")
 		err := fasthttp.ListenAndServe(":"+viper.GetString("http-server.port"), httpHandler.Handle)
@@ -42,7 +42,7 @@ func setupHttpHandler() {
 	}()
 }
 
-func mustInitConfig() {
+func setupConfig() {
 	viper.SetConfigFile("./configuration.yaml")
 	err := viper.ReadInConfig()
 	if err != nil {
@@ -50,9 +50,9 @@ func mustInitConfig() {
 	}
 }
 
-func mustInitStorage() {
-	storage = filer.NewStorage()
-	if storage.LoadAllData() != nil {
+func setupFiler() {
+	var err error
+	if filerService, err = filer.NewFiler(); err != nil {
 		logrus.Fatal("failed to get all data")
 	}
 }
