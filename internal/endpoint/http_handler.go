@@ -78,10 +78,10 @@ func (h *HttpHandler) Handle(ctx *fasthttp.RequestCtx) {
 }
 
 type File struct {
-	Name      string `json:"name,required"`
-	Ids       []int  `json:"ids,required"`
-	NewFile   bool   `json:"new-file"`
-	NotUnique bool   `json:"not-unique"`
+	Name      string   `json:"name,required"`
+	Ids       []uint32 `json:"ids,required"`
+	NewFile   bool     `json:"new-file"`
+	NotUnique bool     `json:"not-unique"`
 }
 
 func (h *HttpHandler) WriteInFile(ctx *fasthttp.RequestCtx) {
@@ -137,7 +137,7 @@ func (h *HttpHandler) GetDataFromFile(ctx *fasthttp.RequestCtx) {
 			if _, err = w.WriteString(" id: "); err != nil {
 				return
 			}
-			if _, err = w.WriteString(strconv.Itoa(id)); err != nil {
+			if _, err = w.WriteString(strconv.Itoa(int(id))); err != nil {
 				return
 			}
 		}

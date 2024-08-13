@@ -47,7 +47,7 @@ func NewFiler() (*Filer, error) {
 // to overwrite data in already existing file
 // If flag notUnique is set `true`, it allows user to set already
 // existing ids in file.
-func (f *Filer) WriteData(filename string, ids []int, newFile, notUnique bool) error {
+func (f *Filer) WriteData(filename string, ids []uint32, newFile, notUnique bool) error {
 	f.mx.Lock()
 	defer f.mx.Unlock()
 
@@ -75,7 +75,7 @@ func (f *Filer) WriteData(filename string, ids []int, newFile, notUnique bool) e
 	return f.writeData(file, filename, ids, newFile, notUnique)
 }
 
-func (f *Filer) writeData(file *os.File, filename string, ids []int, newFile, notUnique bool) error {
+func (f *Filer) writeData(file *os.File, filename string, ids []uint32, newFile, notUnique bool) error {
 	buf := make([]string, len(ids))
 
 	for i, id := range ids {
@@ -84,7 +84,7 @@ func (f *Filer) writeData(file *os.File, filename string, ids []int, newFile, no
 			return ErrMustBeUnique
 		}
 
-		buf[i] = strconv.Itoa(id)
+		buf[i] = strconv.Itoa(int(id))
 	}
 
 	writer := bufio.NewWriter(file)
@@ -114,7 +114,7 @@ func (f *Filer) writeData(file *os.File, filename string, ids []int, newFile, no
 // file, from which you want to get data.
 // If file specified was not found in storage,
 // it returns error that file is not exist.
-func (f *Filer) GetData(filename string) ([]int, error) {
+func (f *Filer) GetData(filename string) ([]uint32, error) {
 	f.mx.Lock()
 	defer f.mx.Unlock()
 	_, ok := f.storage.fileStorage[filename]
@@ -130,7 +130,7 @@ func (f *Filer) GetData(filename string) ([]int, error) {
 // from file, which name is also given by function body.
 // If file is not exist, function returns error that file
 // is not exist. DeleteData also deletes data from storage.
-func (f *Filer) DeleteData(filename string, ids []int) error {
+func (f *Filer) DeleteData(filename string, ids []uint32) error {
 	f.mx.Lock()
 	defer f.mx.Unlock()
 
@@ -159,7 +159,7 @@ func (f *Filer) DeleteData(filename string, ids []int) error {
 
 	buf := make([]string, 0, len(m))
 	for id := range m {
-		buf = append(buf, strconv.Itoa(id))
+		buf = append(buf, strconv.Itoa(int(id)))
 	}
 
 	data := strings.Join(buf, ",")
@@ -210,7 +210,7 @@ func (f *Filer) loadFileData(file os.DirEntry) error {
 
 	f.initFile(file.Name())
 	ids := strings.Split(string(scanner.Bytes()), `,`)
-	idsInt := make([]int, len(ids))
+	idsInt := make([]uint32, len(ids))
 	for i, id := range ids {
 		idInt, err := strconv.Atoi(id)
 		if err != nil {
@@ -218,7 +218,7 @@ func (f *Filer) loadFileData(file os.DirEntry) error {
 			return err
 		}
 
-		idsInt[i] = idInt
+		idsInt[i] = uint32(idInt)
 	}
 
 	f.storage.put(file.Name(), idsInt)
@@ -242,7 +242,7 @@ func (f *Filer) DeleteFile(filename string) error {
 }
 
 func (f *Filer) initFile(filename string) {
-	f.storage.fileStorage[filename] = &fileIds{ids: make(map[int]struct{})}
+	f.storage.fileStorage[filename] = &fileIds{ids: make(map[uint32]struct{})}
 }
 
 type storage struct {
@@ -251,7 +251,7 @@ type storage struct {
 }
 
 type fileIds struct {
-	ids map[int]struct{}
+	ids map[uint32]struct{}
 }
 
 func newStorage() *storage {
@@ -260,7 +260,7 @@ func newStorage() *storage {
 	}
 }
 
-func (s *storage) add(id int, filename string, notUnique bool) bool {
+func (s *storage) add(id uint32, filename string, notUnique bool) bool {
 	s.mx.Lock()
 	defer s.mx.Unlock()
 
@@ -275,7 +275,7 @@ func (s *storage) add(id int, filename string, notUnique bool) bool {
 	return true
 }
 
-func (s *storage) put(filename string, ids []int) {
+func (s *storage) put(filename string, ids []uint32) {
 	s.mx.Lock()
 	defer s.mx.Unlock()
 
@@ -284,7 +284,7 @@ func (s *storage) put(filename string, ids []int) {
 	}
 }
 
-func (s *storage) find(id int) bool {
+func (s *storage) find(id uint32) bool {
 	for _, m := range s.fileStorage {
 		for key := range m.ids {
 			if key == id {
@@ -295,9 +295,9 @@ func (s *storage) find(id int) bool {
 	return false
 }
 
-func (s *storage) getData(filename string) []int {
+func (s *storage) getData(filename string) []uint32 {
 	m := s.fileStorage[filename].ids
-	id := make([]int, 0, len(m))
+	id := make([]uint32, 0, len(m))
 	for key := range m {
 		id = append(id, key)
 	}
@@ -305,7 +305,7 @@ func (s *storage) getData(filename string) []int {
 	return id
 }
 
-func (s *storage) deleteData(filename string, ids []int) {
+func (s *storage) deleteData(filename string, ids []uint32) {
 	m := s.fileStorage[filename].ids
 	for _, id := range ids {
 		delete(m, id)
