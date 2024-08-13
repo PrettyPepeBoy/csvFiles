@@ -10,7 +10,6 @@ import (
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 	"strconv"
-	"sync"
 )
 
 var routingMap = map[string]route{
@@ -39,7 +38,6 @@ type route struct {
 type HttpHandler struct {
 	metricsHandler fasthttp.RequestHandler
 	filerService   *filer.Filer
-	filerMutex     sync.Mutex
 }
 
 func init() {
@@ -79,9 +77,6 @@ type File struct {
 }
 
 func (h *HttpHandler) WriteInFile(ctx *fasthttp.RequestCtx) {
-	h.filerMutex.Lock()
-	defer h.filerMutex.Unlock()
-
 	var file File
 	err := json.Unmarshal(ctx.PostBody(), &file)
 	if err != nil {

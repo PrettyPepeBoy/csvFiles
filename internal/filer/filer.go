@@ -1,19 +1,21 @@
 package filer
 
 import (
-	"encoding/csv"
+	"bufio"
 	"errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 	"log"
 	"os"
-	"slices"
 	"strconv"
+	"strings"
+	"sync"
 )
 
 type Filer struct {
 	storage   *storage
 	directory string
+	mx        sync.Mutex
 }
 
 var (
@@ -46,50 +48,62 @@ func NewFiler() (*Filer, error) {
 // If flag notUnique is set `true`, it allows user to set already
 // existing ids in file.
 func (f *Filer) WriteData(filename string, ids []int, newFile, notUnique bool) error {
-	_, err := os.Stat(f.directory + filename)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && newFile {
-			f.initFile(filename)
-		} else if errors.Is(err, os.ErrNotExist) && !newFile {
-			metricFilerErrors.Inc()
+	f.mx.Lock()
+	defer f.mx.Unlock()
+
+	var (
+		file *os.File
+		err  error
+	)
+
+	if newFile {
+		f.initFile(filename)
+	} else {
+		_, ok := f.storage.fileStorage[filename]
+		if !ok {
 			return ErrNewFileIsNotSet
-		} else {
-			metricFilerErrors.Inc()
-			logrus.Errorf("failed to put data in file, error: %v", err)
-			return err
 		}
 	}
-	return f.writeData(filename, ids, notUnique)
+
+	file, err = os.OpenFile(f.directory+filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0777)
+	if err != nil {
+		metricFilerErrors.Inc()
+		return err
+	}
+
+	return f.writeData(file, filename, ids, newFile, notUnique)
 }
 
-func (f *Filer) writeData(filename string, ids []int, notUnique bool) error {
+func (f *Filer) writeData(file *os.File, filename string, ids []int, newFile, notUnique bool) error {
 	buf := make([]string, len(ids))
 
 	for i, id := range ids {
 		if !f.storage.add(id, filename, notUnique) {
+			f.storage.deleteData(filename, ids)
 			return ErrMustBeUnique
 		}
 
 		buf[i] = strconv.Itoa(id)
 	}
 
-	file, err := os.OpenFile(f.directory+filename, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-	if err != nil {
+	writer := bufio.NewWriter(file)
 
-		metricFilerErrors.Inc()
-		logrus.Errorf("failed to open file: %s, error: %v", filename, err)
-		return err
+	var data string
+	if newFile {
+		data = strings.Join(buf, ",")
+	} else {
+		data = "," + strings.Join(buf, ",")
 	}
 
-	writer := csv.NewWriter(file)
-	err = writer.Write(buf)
+	_, err := writer.Write([]byte(data))
 	if err != nil {
+		f.storage.deleteData(filename, ids)
 		metricFilerErrors.Inc()
 		logrus.Errorf("failed to write data to file, error: %v", err)
 		return err
 	}
 
-	writer.Flush()
+	_ = writer.Flush()
 	_ = file.Close()
 	return nil
 }
@@ -100,11 +114,15 @@ func (f *Filer) writeData(filename string, ids []int, notUnique bool) error {
 // If file specified was not found in storage,
 // it returns error that file is not exist.
 func (f *Filer) GetData(filename string) ([]int, error) {
-	if dt, ok := f.storage.getData(filename); !ok {
+	f.mx.Lock()
+	defer f.mx.Unlock()
+	_, ok := f.storage.fileStorage[filename]
+	if !ok {
 		return nil, ErrFileIsNotExist
-	} else {
-		return dt, nil
 	}
+
+	ids := f.storage.getData(filename)
+	return ids, nil
 }
 
 // DeleteData deletes set of ids, which is given in function body
@@ -112,7 +130,17 @@ func (f *Filer) GetData(filename string) ([]int, error) {
 // If file is not exist, function returns error that file
 // is not exist. DeleteData also deletes data from storage.
 func (f *Filer) DeleteData(filename string, ids []int) error {
-	file, err := os.OpenFile(f.directory+filename, os.O_RDONLY, 0644)
+	f.mx.Lock()
+	defer f.mx.Unlock()
+
+	_, ok := f.storage.fileStorage[filename]
+	if !ok {
+		return ErrFileIsNotExist
+	}
+
+	f.storage.deleteData(filename, ids)
+
+	file, err := os.OpenFile(f.directory+filename, os.O_TRUNC|os.O_WRONLY, 0777)
 	if err != nil {
 		if errors.Is(os.ErrNotExist, err) {
 			return ErrFileIsNotExist
@@ -121,57 +149,27 @@ func (f *Filer) DeleteData(filename string, ids []int) error {
 		return err
 	}
 
-	reader := csv.NewReader(file)
-	reader.FieldsPerRecord = -1
-	dt, err := reader.ReadAll()
-	if err != nil {
-		log.Fatalf("failed to read data from csv file, error: %v", err)
-		return err
-	}
-	_ = file.Close()
-
-	err = os.Truncate(f.directory+filename, 0)
+	m := f.storage.fileStorage[filename].ids
+	writer := bufio.NewWriter(file)
 	if err != nil {
 		logrus.Errorf("failed to remove file, error: %v", err)
 		return err
 	}
 
-	result := make([][]string, len(dt))
-	for i, slc := range dt {
-		length := len(slc)
-
-		for _, id := range slc {
-			idInt, err := strconv.Atoi(id)
-			if err != nil {
-				return err
-			}
-
-			if _, find := slices.BinarySearch(ids, idInt); find {
-				length -= 1
-				continue
-			}
-			result[i] = append(result[i], id)
-		}
-		result[i] = result[i][:length:length]
+	buf := make([]string, 0, len(m))
+	for id := range m {
+		buf = append(buf, strconv.Itoa(id))
 	}
 
-	file, err = os.Create(f.directory + filename)
+	data := strings.Join(buf, ",")
+	_, err = writer.Write([]byte(data))
 	if err != nil {
-		metricFilerErrors.Inc()
+		f.storage.put(filename, ids)
+		logrus.Errorf("failed to write data, error: %v", err)
 		panic(err)
 	}
 
-	writer := csv.NewWriter(file)
-	err = writer.WriteAll(result)
-	if err != nil {
-		metricFilerErrors.Inc()
-		logrus.Errorf("failed to write data, error: %v", err)
-		return err
-	}
-
-	f.storage.deleteData(filename, ids)
-
-	writer.Flush()
+	_ = writer.Flush()
 	_ = file.Close()
 	return nil
 }
@@ -201,33 +199,93 @@ func (f *Filer) loadFileData(file os.DirEntry) error {
 
 	f.initFile(file.Name())
 
-	reader := csv.NewReader(fl)
-	reader.FieldsPerRecord = -1
+	scanner := bufio.NewScanner(fl)
+	scanner.Scan()
+	ids := strings.Split(string(scanner.Bytes()), `,`)
 
-	dt, err := reader.ReadAll()
-	if err != nil {
-		log.Fatalf("failed to read data from csv file, error: %v", err)
-		return err
-	}
-
-	for _, array := range dt {
-		var idInt int
-		for _, id := range array {
-			idInt, err = strconv.Atoi(id)
-			if err != nil {
-				log.Fatalf("failed to convert string to integer in file %s, element: %v, error: %v", file.Name(), id, err)
-			}
-
-			f.storage.loadData(idInt, file.Name())
+	idsInt := make([]int, len(ids))
+	for i, id := range ids {
+		idInt, err := strconv.Atoi(id)
+		if err != nil {
+			log.Fatalf("failed to convert string to integer in file %s, element: %v, error: %v", file.Name(), id, err)
+			return err
 		}
+
+		idsInt[i] = idInt
 	}
 
+	f.storage.put(file.Name(), idsInt)
 	_ = fl.Close()
 	return nil
 }
 
 func (f *Filer) initFile(filename string) {
-	f.storage.fileStorage[filename] = &data{
-		id: make(map[int]struct{}),
+	f.storage.fileStorage[filename] = &fileIds{ids: make(map[int]struct{})}
+}
+
+type storage struct {
+	fileStorage map[string]*fileIds
+	mx          sync.Mutex
+}
+
+type fileIds struct {
+	ids map[int]struct{}
+}
+
+func newStorage() *storage {
+	return &storage{
+		fileStorage: make(map[string]*fileIds),
+	}
+}
+
+func (s *storage) add(id int, filename string, notUnique bool) bool {
+	s.mx.Lock()
+	defer s.mx.Unlock()
+
+	if s.find(id) {
+		if !notUnique {
+			return false
+		}
+	}
+
+	s.fileStorage[filename].ids[id] = struct{}{}
+
+	return true
+}
+
+func (s *storage) put(filename string, ids []int) {
+	s.mx.Lock()
+	defer s.mx.Unlock()
+
+	for _, id := range ids {
+		s.fileStorage[filename].ids[id] = struct{}{}
+	}
+}
+
+func (s *storage) find(id int) bool {
+	for _, m := range s.fileStorage {
+		for key := range m.ids {
+			if key == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *storage) getData(filename string) []int {
+	m := s.fileStorage[filename].ids
+	id := make([]int, 0, len(m))
+	for key := range m {
+		id = append(id, key)
+	}
+
+	return id
+}
+
+func (s *storage) deleteData(filename string, ids []int) {
+	m := s.fileStorage[filename].ids
+	for _, id := range ids {
+		delete(m, id)
 	}
 }
