@@ -67,6 +67,7 @@ func (f *Filer) WriteData(filename string, ids []int, newFile, notUnique bool) e
 
 	file, err = os.OpenFile(f.directory+filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0777)
 	if err != nil {
+		_ = os.Remove(f.directory + filename)
 		metricFilerErrors.Inc()
 		return err
 	}
@@ -197,12 +198,18 @@ func (f *Filer) loadFileData(file os.DirEntry) error {
 		return err
 	}
 
-	f.initFile(file.Name())
-
 	scanner := bufio.NewScanner(fl)
 	scanner.Scan()
-	ids := strings.Split(string(scanner.Bytes()), `,`)
 
+	if len(scanner.Bytes()) == 0 {
+		err = os.Remove(f.directory + file.Name())
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	f.initFile(file.Name())
+	ids := strings.Split(string(scanner.Bytes()), `,`)
 	idsInt := make([]int, len(ids))
 	for i, id := range ids {
 		idInt, err := strconv.Atoi(id)
@@ -216,6 +223,21 @@ func (f *Filer) loadFileData(file os.DirEntry) error {
 
 	f.storage.put(file.Name(), idsInt)
 	_ = fl.Close()
+	return nil
+}
+
+func (f *Filer) DeleteFile(filename string) error {
+	err := os.Remove(f.directory + filename)
+	if err != nil {
+		if errors.Is(os.ErrNotExist, err) {
+			return ErrFileIsNotExist
+		}
+
+		logrus.Errorf("failed to remove file: %s, error: %v", filename, err)
+		return err
+	}
+
+	delete(f.storage.fileStorage, filename)
 	return nil
 }
 

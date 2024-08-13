@@ -25,6 +25,14 @@ var routingMap = map[string]route{
 		}
 	}},
 
+	"/api/v1/file": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) {
+		if string(ctx.Method()) == fasthttp.MethodDelete {
+			h.DeleteFile(ctx)
+		} else {
+			ctx.SetStatusCode(fasthttp.StatusMethodNotAllowed)
+		}
+	}},
+
 	"/metrics": {handler: func(ctx *fasthttp.RequestCtx, h *HttpHandler) {
 		h.metricsHandler(ctx)
 	}},
@@ -84,14 +92,21 @@ func (h *HttpHandler) WriteInFile(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if len(file.Ids) == 0 {
+		ctx.SetBody([]byte("empty ids"))
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+	}
+
 	err = h.filerService.WriteData(file.Name, file.Ids, file.NewFile, file.NotUnique)
 	if err != nil {
 		if errors.Is(filer.ErrNewFileIsNotSet, err) {
+			ctx.SetBody([]byte(filer.ErrNewFileIsNotSet.Error()))
 			ctx.SetStatusCode(fasthttp.StatusBadRequest)
 			return
 		}
 
 		if errors.Is(filer.ErrMustBeUnique, err) {
+			ctx.SetBody([]byte(filer.ErrMustBeUnique.Error()))
 			ctx.SetStatusCode(fasthttp.StatusBadRequest)
 			return
 		}
@@ -110,6 +125,9 @@ func (h *HttpHandler) GetDataFromFile(ctx *fasthttp.RequestCtx) {
 
 	ctx.SetBodyStreamWriter(func(w *bufio.Writer) {
 		for i, id := range data {
+			if err = w.WriteByte('\n'); err != nil {
+				return
+			}
 			if _, err = w.WriteString("Num: "); err != nil {
 				return
 			}
@@ -120,9 +138,6 @@ func (h *HttpHandler) GetDataFromFile(ctx *fasthttp.RequestCtx) {
 				return
 			}
 			if _, err = w.WriteString(strconv.Itoa(id)); err != nil {
-				return
-			}
-			if err = w.WriteByte('\n'); err != nil {
 				return
 			}
 		}
@@ -140,6 +155,21 @@ func (h *HttpHandler) DeleteDataFromFile(ctx *fasthttp.RequestCtx) {
 	err = h.filerService.DeleteData(f.Name, f.Ids)
 	if err != nil {
 		if errors.Is(filer.ErrFileIsNotExist, err) {
+			ctx.SetBody([]byte(filer.ErrFileIsNotExist.Error()))
+			ctx.SetStatusCode(fasthttp.StatusBadRequest)
+			return
+		}
+
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		return
+	}
+}
+
+func (h *HttpHandler) DeleteFile(ctx *fasthttp.RequestCtx) {
+	err := h.filerService.DeleteFile(string(ctx.QueryArgs().Peek("file")))
+	if err != nil {
+		if errors.Is(err, filer.ErrFileIsNotExist) {
+			ctx.SetBody([]byte(filer.ErrFileIsNotExist.Error()))
 			ctx.SetStatusCode(fasthttp.StatusBadRequest)
 			return
 		}
