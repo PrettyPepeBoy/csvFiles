@@ -150,7 +150,7 @@ func (f *Filer) DeleteData(filename string, ids []uint32) error {
 		return err
 	}
 
-	m := f.storage.fileStorage[filename].ids
+	m := f.storage.fileStorage[filename]
 	writer := bufio.NewWriter(file)
 	if err != nil {
 		logrus.Errorf("failed to remove file, error: %v", err)
@@ -242,21 +242,18 @@ func (f *Filer) DeleteFile(filename string) error {
 }
 
 func (f *Filer) initFile(filename string) {
-	f.storage.fileStorage[filename] = &fileIds{ids: make(map[uint32]struct{})}
+	m := make(map[uint32]struct{})
+	f.storage.fileStorage[filename] = m
 }
 
 type storage struct {
-	fileStorage map[string]*fileIds
+	fileStorage map[string]map[uint32]struct{}
 	mx          sync.Mutex
-}
-
-type fileIds struct {
-	ids map[uint32]struct{}
 }
 
 func newStorage() *storage {
 	return &storage{
-		fileStorage: make(map[string]*fileIds),
+		fileStorage: make(map[string]map[uint32]struct{}),
 	}
 }
 
@@ -270,7 +267,7 @@ func (s *storage) add(id uint32, filename string, notUnique bool) bool {
 		}
 	}
 
-	s.fileStorage[filename].ids[id] = struct{}{}
+	s.fileStorage[filename][id] = struct{}{}
 
 	return true
 }
@@ -280,13 +277,13 @@ func (s *storage) put(filename string, ids []uint32) {
 	defer s.mx.Unlock()
 
 	for _, id := range ids {
-		s.fileStorage[filename].ids[id] = struct{}{}
+		s.fileStorage[filename][id] = struct{}{}
 	}
 }
 
 func (s *storage) find(id uint32) bool {
 	for _, m := range s.fileStorage {
-		for key := range m.ids {
+		for key := range m {
 			if key == id {
 				return true
 			}
@@ -296,7 +293,7 @@ func (s *storage) find(id uint32) bool {
 }
 
 func (s *storage) getData(filename string) []uint32 {
-	m := s.fileStorage[filename].ids
+	m := s.fileStorage[filename]
 	id := make([]uint32, 0, len(m))
 	for key := range m {
 		id = append(id, key)
@@ -306,7 +303,7 @@ func (s *storage) getData(filename string) []uint32 {
 }
 
 func (s *storage) deleteData(filename string, ids []uint32) {
-	m := s.fileStorage[filename].ids
+	m := s.fileStorage[filename]
 	for _, id := range ids {
 		delete(m, id)
 	}
