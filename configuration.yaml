@@ -1,6 +1,4 @@
 storage:
-  hash-buckets:
-    amount: 20
   files:
     directory: ./.csv_files/
 

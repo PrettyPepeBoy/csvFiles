@@ -19,7 +19,7 @@ func writeData() {
 	}
 
 	writer := bufio.NewWriter(file)
-	_, err = writer.WriteString("1,2,3,4,5,")
+	_, err = writer.WriteString("1,2,3,4,5")
 	if err != nil {
 		panic(err)
 	}

@@ -13,7 +13,7 @@ import (
 )
 
 type Filer struct {
-	storage   *storage
+	storage   map[string]map[uint32]uint8
 	directory string
 	mx        sync.Mutex
 }
@@ -27,7 +27,7 @@ var (
 // NewFiler creates new filer service
 func NewFiler() (*Filer, error) {
 	f := &Filer{
-		storage:   newStorage(),
+		storage:   make(map[string]map[uint32]uint8),
 		directory: viper.GetString("storage.files.directory"),
 	}
 
@@ -51,40 +51,37 @@ func (f *Filer) WriteData(filename string, ids []uint32, newFile, notUnique bool
 	f.mx.Lock()
 	defer f.mx.Unlock()
 
-	var (
-		file *os.File
-		err  error
-	)
-
 	if newFile {
 		f.initFile(filename)
 	} else {
-		_, ok := f.storage.fileStorage[filename]
+		_, ok := f.storage[filename]
 		if !ok {
 			return ErrNewFileIsNotSet
 		}
 	}
 
-	file, err = os.OpenFile(f.directory+filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0777)
-	if err != nil {
-		_ = os.Remove(f.directory + filename)
-		metricFilerErrors.Inc()
-		return err
-	}
-
-	return f.writeData(file, filename, ids, newFile, notUnique)
+	return f.writeData(filename, ids, newFile, notUnique)
 }
 
-func (f *Filer) writeData(file *os.File, filename string, ids []uint32, newFile, notUnique bool) error {
+func (f *Filer) writeData(filename string, ids []uint32, newFile, notUnique bool) error {
+
 	buf := make([]string, len(ids))
 
 	for i, id := range ids {
-		if !f.storage.add(id, filename, notUnique) {
-			f.storage.deleteData(filename, ids)
+		if !f.add(id, filename, notUnique) {
+			f.deleteData(filename, ids)
 			return ErrMustBeUnique
 		}
 
 		buf[i] = strconv.Itoa(int(id))
+	}
+
+	file, err := os.OpenFile(f.directory+filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0777)
+	if err != nil {
+		f.deleteData(filename, ids)
+		_ = file.Close()
+		metricFilerErrors.Inc()
+		return err
 	}
 
 	writer := bufio.NewWriter(file)
@@ -96,9 +93,9 @@ func (f *Filer) writeData(file *os.File, filename string, ids []uint32, newFile,
 		data = "," + strings.Join(buf, ",")
 	}
 
-	_, err := writer.Write([]byte(data))
+	_, err = writer.Write([]byte(data))
 	if err != nil {
-		f.storage.deleteData(filename, ids)
+		f.deleteData(filename, ids)
 		metricFilerErrors.Inc()
 		logrus.Errorf("failed to write data to file, error: %v", err)
 		return err
@@ -117,12 +114,12 @@ func (f *Filer) writeData(file *os.File, filename string, ids []uint32, newFile,
 func (f *Filer) GetData(filename string) ([]uint32, error) {
 	f.mx.Lock()
 	defer f.mx.Unlock()
-	_, ok := f.storage.fileStorage[filename]
+	_, ok := f.storage[filename]
 	if !ok {
 		return nil, ErrFileIsNotExist
 	}
 
-	ids := f.storage.getData(filename)
+	ids := f.getData(filename)
 	return ids, nil
 }
 
@@ -130,16 +127,18 @@ func (f *Filer) GetData(filename string) ([]uint32, error) {
 // from file, which name is also given by function body.
 // If file is not exist, function returns error that file
 // is not exist. DeleteData also deletes data from storage.
+// If there is no data in file after DeleteData, it also deletes
+// file from current directory.
 func (f *Filer) DeleteData(filename string, ids []uint32) error {
 	f.mx.Lock()
 	defer f.mx.Unlock()
 
-	_, ok := f.storage.fileStorage[filename]
+	_, ok := f.storage[filename]
 	if !ok {
 		return ErrFileIsNotExist
 	}
 
-	f.storage.deleteData(filename, ids)
+	f.deleteData(filename, ids)
 
 	file, err := os.OpenFile(f.directory+filename, os.O_TRUNC|os.O_WRONLY, 0777)
 	if err != nil {
@@ -150,11 +149,15 @@ func (f *Filer) DeleteData(filename string, ids []uint32) error {
 		return err
 	}
 
-	m := f.storage.fileStorage[filename]
+	m := f.storage[filename]
 	writer := bufio.NewWriter(file)
-	if err != nil {
-		logrus.Errorf("failed to remove file, error: %v", err)
-		return err
+	if len(m) == 0 {
+		_ = file.Close()
+		err = f.DeleteFile(filename)
+		if err != nil {
+			panic(err)
+		}
+		return nil
 	}
 
 	buf := make([]string, 0, len(m))
@@ -165,7 +168,7 @@ func (f *Filer) DeleteData(filename string, ids []uint32) error {
 	data := strings.Join(buf, ",")
 	_, err = writer.Write([]byte(data))
 	if err != nil {
-		f.storage.put(filename, ids)
+		f.put(filename, ids)
 		logrus.Errorf("failed to write data, error: %v", err)
 		panic(err)
 	}
@@ -221,7 +224,7 @@ func (f *Filer) loadFileData(file os.DirEntry) error {
 		idsInt[i] = uint32(idInt)
 	}
 
-	f.storage.put(file.Name(), idsInt)
+	f.put(file.Name(), idsInt)
 	_ = fl.Close()
 	return nil
 }
@@ -237,52 +240,36 @@ func (f *Filer) DeleteFile(filename string) error {
 		return err
 	}
 
-	delete(f.storage.fileStorage, filename)
+	delete(f.storage, filename)
 	return nil
 }
 
 func (f *Filer) initFile(filename string) {
-	m := make(map[uint32]struct{})
-	f.storage.fileStorage[filename] = m
+	m := make(map[uint32]uint8)
+	f.storage[filename] = m
 }
 
-type storage struct {
-	fileStorage map[string]map[uint32]struct{}
-	mx          sync.Mutex
-}
-
-func newStorage() *storage {
-	return &storage{
-		fileStorage: make(map[string]map[uint32]struct{}),
-	}
-}
-
-func (s *storage) add(id uint32, filename string, notUnique bool) bool {
-	s.mx.Lock()
-	defer s.mx.Unlock()
-
-	if s.find(id) {
+func (f *Filer) add(id uint32, filename string, notUnique bool) bool {
+	if f.find(id) {
 		if !notUnique {
+			f.storage[filename][id]++
 			return false
 		}
 	}
 
-	s.fileStorage[filename][id] = struct{}{}
+	f.storage[filename][id]++
 
 	return true
 }
 
-func (s *storage) put(filename string, ids []uint32) {
-	s.mx.Lock()
-	defer s.mx.Unlock()
-
+func (f *Filer) put(filename string, ids []uint32) {
 	for _, id := range ids {
-		s.fileStorage[filename][id] = struct{}{}
+		f.storage[filename][id]++
 	}
 }
 
-func (s *storage) find(id uint32) bool {
-	for _, m := range s.fileStorage {
+func (f *Filer) find(id uint32) bool {
+	for _, m := range f.storage {
 		for key := range m {
 			if key == id {
 				return true
@@ -292,19 +279,26 @@ func (s *storage) find(id uint32) bool {
 	return false
 }
 
-func (s *storage) getData(filename string) []uint32 {
-	m := s.fileStorage[filename]
-	id := make([]uint32, 0, len(m))
-	for key := range m {
+func (f *Filer) getData(filename string) []uint32 {
+	id := make([]uint32, 0, len(f.storage[filename]))
+	for key := range f.storage[filename] {
 		id = append(id, key)
 	}
 
 	return id
 }
 
-func (s *storage) deleteData(filename string, ids []uint32) {
-	m := s.fileStorage[filename]
+func (f *Filer) deleteData(filename string, ids []uint32) {
 	for _, id := range ids {
-		delete(m, id)
+		_, ok := f.storage[filename][id]
+		if !ok {
+			continue
+		}
+
+		f.storage[filename][id]--
+
+		if f.storage[filename][id] == 0 {
+			delete(f.storage[filename], id)
+		}
 	}
 }
